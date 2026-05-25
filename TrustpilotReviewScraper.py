@@ -2,14 +2,15 @@ from playwright.sync_api import sync_playwright
 import requests
 import pandas as pd
 
-def fetch(sku="lendingclub.com", page=1):
+def scrape_all(sku):
+    all_reviews = []
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
         )
-        page_obj = context.new_page()  
-
+        page_obj = context.new_page()
         page_obj.goto(f"https://www.trustpilot.com/review/{sku}")
         page_obj.wait_for_load_state("domcontentloaded")
         page_obj.wait_for_timeout(3000)
@@ -24,19 +25,13 @@ def fetch(sku="lendingclub.com", page=1):
                 return null;
             }
         """)
-       
         cookies = context.cookies()
         cookie_dict = {c['name']: c['value'] for c in cookies}
-
         browser.close()
 
     if not build_id:
+        print("build id not found !")
         return []
-
-    if page <= 1:
-        api_url = f"https://www.trustpilot.com/_next/data/{build_id}/review/{sku}.json?languages=all&businessunit={sku}"
-    else:
-        api_url = f"https://www.trustpilot.com/_next/data/{build_id}/review/{sku}.json?page={page}&languages=all&businessunit={sku}"
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
@@ -45,35 +40,51 @@ def fetch(sku="lendingclub.com", page=1):
         "Referer": f"https://www.trustpilot.com/review/{sku}",
     }
 
-    response = requests.get(api_url, headers=headers, cookies=cookie_dict, allow_redirects=True)
-    print(f" Status: {response.status_code}")
+    page = 1
+    while True:
+        print(f"Scraping page {page}...")
 
-    data = response.json()
-    page_props = data.get("pageProps", {})
-    product_name = page_props.get("businessUnit", {}).get("displayName")
+        if page == 1:
+            api_url = f"https://www.trustpilot.com/_next/data/{build_id}/review/{sku}.json?languages=all&businessunit={sku}"
+        else:
+            api_url = f"https://www.trustpilot.com/_next/data/{build_id}/review/{sku}.json?page={page}&languages=all&businessunit={sku}"
 
-    reviews = []
-    for item in page_props.get("reviews", []):
-        review = {
-            "review_id": item.get("id"),
-            "author": item.get("consumer", {}).get("displayName"),
-            "title": item.get("title"),
-            "text": item.get("text"),
-            "rating": item.get("rating"),
-            "date": item.get("labels", {}).get("verification", {}).get("createdDateTime"),
-            "product_name": product_name,
-            "location": item.get("consumer", {}).get("countryCode"),
-            "brand_response": item.get("reply", {}).get("message") if item.get("reply") else None,
-            "is_verified": item.get("labels", {}).get("verification", {}).get("isVerified"),
-        }
-        reviews.append(review)
+        response = requests.get(api_url, headers=headers, cookies=cookie_dict)
+        print(f"Status: {response.status_code}")
 
-    df = pd.DataFrame(reviews)
-    file_name = f"{sku}_reviews_{page}.csv"
-    df.to_csv(file_name, index=False, encoding="utf-8-sig")
-    print(f"Saved reviews to {file_name}")
+        if response.status_code != 200:
+            print("Error fetching data, stopping.")
+            break
 
-    return reviews
+        data = response.json()
+        page_props = data.get("pageProps", {})
+        product_name = page_props.get("businessUnit", {}).get("displayName")
+        reviews = page_props.get("reviews", [])
 
+        if not reviews:
+            print("No more reviews. Done!")
+            break
 
-fetch("lendingclub.com", page=3)
+        for item in reviews:
+            all_reviews.append({
+                "review_id": item.get("id"),
+                "author": item.get("consumer", {}).get("displayName"),
+                "title": item.get("title"),
+                "text": item.get("text"),
+                "rating": item.get("rating"),
+                "date": item.get("labels", {}).get("verification", {}).get("createdDateTime"),
+                "product_name": product_name,
+                "location": item.get("consumer", {}).get("countryCode"),
+                "brand_response": item.get("reply", {}).get("message") if item.get("reply") else None,
+                "is_verified": item.get("labels", {}).get("verification", {}).get("isVerified"),
+            })
+
+        print(f"Total collected: {len(all_reviews)}")
+        page += 1
+
+    df = pd.DataFrame(all_reviews)
+    df.to_csv(f"{sku}_all_reviews.csv", index=False, encoding="utf-8-sig")
+    print(f"\nDone! {len(all_reviews)} reviews saved to {sku}_all_reviews.csv")
+    return all_reviews
+
+scrape_all("lendingclub.com")
